@@ -39,6 +39,13 @@ Supported input modes
         --ligand-resid 501 \
         --output-dir cases
 
+4. Exclude all-carbon atom trios:
+
+    python prepare_docking_trio_benchmark.py \
+        --complex complex.pdb \
+        --output-dir cases \
+        --exclude-all-carbon-trios
+
 Ligand formats supported through RDKit:
     .pdb
     .sdf
@@ -51,6 +58,8 @@ Notes
 * Only the largest covalently connected ligand fragment is used.
 * PDB receptor cleanup removes HETATM records, including waters and ions.
 * Receptor chains can optionally be removed if they are distant from ligand.
+* --exclude-all-carbon-trios removes C-C-C trios while retaining other
+  homogeneous trios such as N-N-N.
 * A manifest.csv is written describing every output benchmark case.
 """
 
@@ -95,8 +104,6 @@ COMMON_ADDITIVES = {
     "BME",
 }
 
-# These are biologically meaningful molecules, but normally undesirable
-# as an automatically selected "drug-like benchmark ligand".
 COMMON_COFACTORS = {
     "FAD", "FMN",
     "NAD", "NAP", "NDP", "NAI",
@@ -111,7 +118,7 @@ COMMON_COFACTORS = {
 }
 
 COMMON_LIPIDS = {
-    "CLR",        # cholesterol in many PDB structures
+    "CLR",
     "CHL",
     "OLA",
     "PLM",
@@ -211,13 +218,11 @@ def pdb_element(line: str) -> str:
 
     atom_name = line[12:16].strip()
 
-    # Remove leading digits: 1HG -> HG
     atom_name = atom_name.lstrip("0123456789")
 
     if not atom_name:
         return ""
 
-    # Most protein/PDB atoms can be handled sufficiently here.
     if len(atom_name) >= 2 and atom_name[:2].title() in {
         "Cl", "Br", "Si", "Se", "Na", "Ca", "Mg", "Zn", "Fe",
         "Mn", "Co", "Cu", "Ni",
@@ -258,8 +263,6 @@ def rdkit_from_pdb_lines(lines: list[str]) -> Chem.Mol | None:
 
     block = "\n".join(lines) + "\nEND\n"
 
-    # For isolated PDB ligands, proximity bonding is useful because PDB files
-    # do not always contain complete CONECT information.
     mol = Chem.MolFromPDBBlock(
         block,
         sanitize=False,
@@ -273,8 +276,6 @@ def rdkit_from_pdb_lines(lines: list[str]) -> Chem.Mol | None:
     try:
         Chem.SanitizeMol(mol)
     except Exception:
-        # Connectivity is more important here than perfect chemistry.
-        # Keep the molecule if RDKit at least recovered the graph.
         pass
 
     return mol
@@ -320,11 +321,11 @@ def load_external_ligand(path: Path) -> Chem.Mol:
         if not molecules:
             raise RuntimeError(f"No molecules could be read from {path}")
 
-        # Prefer largest molecule in case SDF contains multiple records.
         mol = max(
             molecules,
             key=lambda m: sum(
-                a.GetAtomicNum() > 1 for a in m.GetAtoms()
+                a.GetAtomicNum() > 1
+                for a in m.GetAtoms()
             ),
         )
 
@@ -429,7 +430,6 @@ def evaluate_candidate(candidate: PDBLigandCandidate):
     if resname in AUTO_EXCLUDE:
         return
 
-    # Ignore tiny components before asking RDKit to do anything complicated.
     heavy_from_pdb = sum(
         pdb_element(line).upper() not in {"H", "D"}
         for line in candidate.lines
@@ -459,7 +459,6 @@ def evaluate_candidate(candidate: PDBLigandCandidate):
         for i in heavy_indices
     )
 
-    # At least one heteroatom is a reasonable automatic-selection criterion.
     if candidate.hetero_atoms == 0:
         return
 
@@ -479,24 +478,15 @@ def evaluate_candidate(candidate: PDBLigandCandidate):
     candidate.molecular_weight = mw
     candidate.clogp = clogp
 
-    # RCSB uses MW >150 Da as part of its ligand-of-interest selection.
     if mw is not None and mw < 120:
         return
 
-    # Very large molecules are less likely to be the type of small-molecule
-    # docking benchmark intended here.
     if mw is not None and mw > 1200:
         return
 
-    # This eliminates many extremely hydrophobic lipids such as cholesterol.
-    # It is intentionally permissive.
     if clogp is not None and clogp > 7.0:
         return
 
-    # Basic heuristic ranking:
-    #
-    # prefer substantial organic molecules with heteroatoms, but do not
-    # strongly reward enormous components.
     candidate.score = (
         min(heavy_atoms, 50)
         + 2.0 * min(candidate.hetero_atoms, 10)
@@ -602,8 +592,8 @@ def enumerate_connected_triplets(
     Enumerate all unique connected 3-heavy-atom sets.
 
     Every connected three-node graph must contain an atom connected to
-    the other two, so the enumeration can be done efficiently by taking
-    pairs of neighbors around every possible center atom.
+    the other two, so enumeration can be done by taking pairs of
+    neighbors around every possible center atom.
     """
 
     triplets = set()
@@ -631,6 +621,28 @@ def enumerate_connected_triplets(
     return sorted(triplets)
 
 
+def triplet_is_all_carbon(
+    mol: Chem.Mol,
+    triplet: tuple[int, int, int],
+) -> bool:
+    """
+    Return True if all three atoms in the triplet are carbon.
+
+    Examples:
+        C-C-C -> True
+        C-C-N -> False
+        C-N-O -> False
+        N-N-N -> False
+
+    This filter is intentionally specific to carbon-only trios.
+    """
+
+    return all(
+        mol.GetAtomWithIdx(atom_idx).GetAtomicNum() == 6
+        for atom_idx in triplet
+    )
+
+
 def graph_distance_matrix(mol: Chem.Mol):
     """
     RDKit topological distance matrix:
@@ -649,17 +661,9 @@ def triplet_pair_is_valid(
     minimum_intervening_atoms: int,
 ) -> bool:
 
-    # Should already follow from the distance criterion, but explicit
-    # disjointness makes the intended behavior clear.
     if set(triplet_a) & set(triplet_b):
         return False
 
-    # If there must be N atoms BETWEEN the two retained groups:
-    #
-    # N = 0 -> minimum graph distance 1
-    # N = 1 -> minimum graph distance 2
-    # N = 2 -> minimum graph distance 3
-    #
     minimum_bond_distance = minimum_intervening_atoms + 1
 
     for a in triplet_a:
@@ -679,19 +683,17 @@ def triplet_pair_is_valid(
 
 def receptor_atom_lines(pdb_lines: list[str]) -> list[str]:
     """
-    Initial benchmark behavior:
-
     Keep standard ATOM records only.
 
-    This automatically removes:
+    This removes:
         waters
         ions
         ligand
         crystallization additives
         most cofactors
 
-    HETATM-modified protein residues such as MSE will therefore also be
-    omitted. This can be expanded later if needed.
+    Note that HETATM-formatted modified protein residues such as MSE
+    are also omitted by this simple implementation.
     """
 
     return [
@@ -724,7 +726,6 @@ def select_nearby_chains(
 
         coords = np.asarray(coords)
 
-        # Determine the shortest protein-chain / ligand distance.
         delta = (
             coords[:, None, :]
             - ligand_xyz[None, :, :]
@@ -851,7 +852,6 @@ def write_case(
 
     ligand_lines = []
 
-    # Distinct residue names make the two motifs easy to identify later.
     for resname, chain, resid, triplet in [
         ("T01", "X", 1, triplet_a),
         ("T02", "Y", 2, triplet_b),
@@ -917,6 +917,23 @@ def atom_description(mol: Chem.Mol, idx: int) -> str:
     name = atom_name_for_rdkit_atom(atom, idx)
 
     return f"{idx}:{name}:{atom.GetSymbol()}"
+
+
+def triplet_element_string(
+    mol: Chem.Mol,
+    triplet: tuple[int, int, int],
+) -> str:
+    """
+    Return a compact element description such as:
+        C-C-N
+        N-N-N
+        C-O-S
+    """
+
+    return "-".join(
+        mol.GetAtomWithIdx(i).GetSymbol()
+        for i in triplet
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -987,6 +1004,16 @@ def main():
         help=(
             "Remove receptor chains having no atom within this many "
             "Angstroms of the ligand. Use 0 to keep every chain."
+        ),
+    )
+
+    parser.add_argument(
+        "--exclude-all-carbon-trios",
+        action="store_true",
+        help=(
+            "Exclude connected ligand atom triplets composed entirely "
+            "of carbon atoms (C-C-C). Other homogeneous triplets such "
+            "as N-N-N are retained."
         ),
     )
 
@@ -1095,6 +1122,32 @@ def main():
         f"Connected heavy-atom triplets: {len(triplets)}"
     )
 
+    if args.exclude_all_carbon_trios:
+
+        original_count = len(triplets)
+
+        triplets = [
+            triplet
+            for triplet in triplets
+            if not triplet_is_all_carbon(
+                ligand,
+                triplet,
+            )
+        ]
+
+        removed_count = original_count - len(triplets)
+
+        print(
+            "All-carbon trio filtering enabled: "
+            f"{len(triplets)}/{original_count} triplets retained "
+            f"({removed_count} C-C-C triplets removed)"
+        )
+
+    if len(triplets) < 2:
+        raise RuntimeError(
+            "Fewer than two eligible triplets remain after filtering."
+        )
+
     graph_distances = graph_distance_matrix(ligand)
 
     valid_pairs = []
@@ -1147,8 +1200,10 @@ def main():
                 "filename",
                 "triplet_A_indices",
                 "triplet_A_atoms",
+                "triplet_A_elements",
                 "triplet_B_indices",
                 "triplet_B_atoms",
+                "triplet_B_elements",
                 "minimum_graph_distance",
             ]
         )
@@ -1189,10 +1244,18 @@ def main():
                         atom_description(ligand, i)
                         for i in ta
                     ),
+                    triplet_element_string(
+                        ligand,
+                        ta,
+                    ),
                     ";".join(map(str, tb)),
                     ";".join(
                         atom_description(ligand, i)
                         for i in tb
+                    ),
+                    triplet_element_string(
+                        ligand,
+                        tb,
                     ),
                     min_distance,
                 ]
