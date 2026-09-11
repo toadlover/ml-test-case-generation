@@ -1,0 +1,9 @@
+case,filename,triplet_A_indices,triplet_A_atoms,triplet_A_elements,triplet_B_indices,triplet_B_atoms,triplet_B_elements,minimum_graph_distance
+1,case_000001.pdb,0;1;2,0:C1:C;1:N1:N;2:N2:N,C-N-N,9;14;15,9:C7:C;14:C12:C;15:N4:N,C-C-N,3
+2,case_000002.pdb,0;1;2,0:C1:C;1:N1:N;2:N2:N,C-N-N,13;14;15,13:C11:C;14:C12:C;15:N4:N,C-C-N,3
+3,case_000003.pdb,1;2;3,1:N1:N;2:N2:N;3:C2:C,N-N-C,9;14;15,9:C7:C;14:C12:C;15:N4:N,C-C-N,3
+4,case_000004.pdb,1;2;3,1:N1:N;2:N2:N;3:C2:C,N-N-C,13;14;15,13:C11:C;14:C12:C;15:N4:N,C-C-N,3
+5,case_000005.pdb,2;3;4,2:N2:N;3:C2:C;4:C3:C,N-C-C,9;14;15,9:C7:C;14:C12:C;15:N4:N,C-C-N,3
+6,case_000006.pdb,2;3;4,2:N2:N;3:C2:C;4:C3:C,N-C-C,13;14;15,13:C11:C;14:C12:C;15:N4:N,C-C-N,3
+7,case_000007.pdb,3;4;5,3:C2:C;4:C3:C;5:N3:N,C-C-N,9;14;15,9:C7:C;14:C12:C;15:N4:N,C-C-N,3
+8,case_000008.pdb,3;4;5,3:C2:C;4:C3:C;5:N3:N,C-C-N,13;14;15,13:C11:C;14:C12:C;15:N4:N,C-C-N,3
